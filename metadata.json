@@ -1,0 +1,5 @@
+{
+  "name": "Sentinel LLM Security Middleware",
+  "description": "A robust security middleware implementation for LLMs featuring input normalization, vector-based jailbreak detection, CPS rule enforcement, and prompt sealing.",
+  "requestFramePermissions": []
+}
