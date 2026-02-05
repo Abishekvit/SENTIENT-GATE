@@ -6,7 +6,7 @@ import {
   TrendingUp, AlertTriangle, User, Zap,
   Droplets, BarChart3, HardDrive, Braces, BrainCircuit,
   Waypoints, ArrowRightLeft, Download, History, LockOpen, Settings2, UploadCloud, MessageSquare,
-  Network, Settings
+  Network, Settings, ShieldQuestion
 } from 'lucide-react';
 import { SecurityLog, ChatMessage, MiddlewareResponse, SecurityTransaction } from './types';
 import { AdminMiddleware } from './AdminMiddleware';
@@ -24,6 +24,7 @@ const AdminApp: React.FC = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [logs, setLogs] = useState<SecurityLog[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activeStep, setActiveStep] = useState<string | null>(null);
   const [liveState, setLiveState] = useState<TelemetryState>(telemetryStore.getState());
   const [showHistory, setShowHistory] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -53,49 +54,66 @@ const AdminApp: React.FC = () => {
     e?.preventDefault();
     if (!input.trim() || isProcessing) return;
 
-    setMessages(prev => [...prev, { role: 'user', text: input, timestamp: Date.now() }]);
+    const rawInput = input;
+    setMessages(prev => [...prev, { role: 'user', text: rawInput, timestamp: Date.now() }]);
     setIsProcessing(true);
     setInput('');
 
     try {
-      const intents = LocalIntentParser.parse(input);
+      setActiveStep('LOCAL_PARSING');
+      const intents = LocalIntentParser.parse(rawInput);
       const normalizedCommand = intents.length > 0
         ? intents.map(i => `${i.operation} ${i.primary_parameter} ${i.value} ${i.modifier_type}`).join('\n')
-        : input;
+        : rawInput;
       
-      const middlewareResult = await middleware.current.process(normalizedCommand, liveState);
+      setActiveStep('AGENTIC_SCRAPE');
+      const middlewareResult = await middleware.current.process(rawInput, normalizedCommand, liveState);
       setLogs(prev => [...prev, ...middlewareResult.logs]);
 
-      if (middlewareResult.predictedState) {
+      if (middlewareResult.allowed && middlewareResult.predictedState) {
         telemetryStore.updateState(middlewareResult.predictedState);
       }
 
+      setActiveStep('REACTION_GEN');
       const [techReaction, chatResponse] = await Promise.all([
         callHardwareReactionAgent(middlewareResult, { ...liveState, ...middlewareResult.predictedState }, intents),
-        callConversationalAgent(input, middlewareResult, intents)
+        callConversationalAgent(rawInput, middlewareResult, intents)
       ]);
       
       setMessages(prev => [...prev, {
-        role: 'model',
+        role: middlewareResult.allowed ? 'model' : 'security',
         text: techReaction,
         timestamp: Date.now(),
+        blocked: !middlewareResult.allowed,
         intent: intents,
         reaction: techReaction,
-        chatResponse: chatResponse
+        chatResponse: chatResponse,
+        reason: middlewareResult.reason
       } as any]);
 
       logStorage.addTransaction({
         transaction_id: `adm_txn_${Date.now()}`,
         timestamp: new Date().toISOString(),
-        input_layer: { user_prompt: input, obfuscation_check: 'PASS', vector_similarity_score: 0 },
+        input_layer: { 
+          user_prompt: rawInput, 
+          normalized_prompt: normalizedCommand,
+          obfuscation_check: 'PASS', 
+          vector_similarity_score: middlewareResult.semanticRisk 
+        },
         context_layer: { connector_used: "ADMIN_ROOT_V3", live_state: liveState },
-        agentic_evaluation: { agent_role: "Root Admin", reasoning: "Bypass enforced by root.", verdict: 'ALLOW', risk_score: 0 },
-        final_decision: 'AUTHORIZED'
+        agentic_evaluation: { 
+          agent_role: "Root Admin Analyst", 
+          reasoning: middlewareResult.reason || "Root check passed.", 
+          verdict: middlewareResult.allowed ? 'ALLOW' : 'BLOCK', 
+          risk_score: middlewareResult.riskScore 
+        },
+        final_decision: middlewareResult.allowed ? 'AUTHORIZED' : 'DENIED'
       });
     } catch (error) {
       setLogs(prev => [...prev, { id: 'err', timestamp: Date.now(), type: 'CRITICAL', message: 'ADMIN_CORE_FAULT' }]);
     } finally {
       setIsProcessing(false);
+      setActiveStep(null);
     }
   };
 
@@ -127,15 +145,12 @@ const AdminApp: React.FC = () => {
     { key: 'axis_1_rpm', label: 'A1 RPM', val: liveState.axis_1_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-amber-400' },
     { key: 'axis_1_temp_c', label: 'A1 Temp', val: liveState.axis_1_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-red-400' },
     { key: 'axis_1_torque_nm', label: 'A1 Torque', val: liveState.axis_1_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-400' },
-    
     { key: 'axis_2_rpm', label: 'A2 RPM', val: liveState.axis_2_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-amber-500' },
     { key: 'axis_2_temp_c', label: 'A2 Temp', val: liveState.axis_2_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-red-500' },
     { key: 'axis_2_torque_nm', label: 'A2 Torque', val: liveState.axis_2_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-500' },
-    
     { key: 'main_pressure_psi', label: 'Pressure', val: liveState.main_pressure_psi, max: SAFETY_THRESHOLDS.max_pressure_psi, unit: 'PSI', icon: BarChart3, color: 'text-orange-400' },
-    { key: 'coolant_flow_lpm', label: 'Coolant', val: liveState.coolant_flow_lpm, max: 20, unit: 'LPM', icon: Droplets, color: 'text-red-400' },
+    { key: 'coolant_flow_lpm', label: 'Coolant', val: liveState.coolant_flow_lpm || 0, max: 20, unit: 'LPM', icon: Droplets, color: 'text-red-400' },
     { key: 'power_draw_kw', label: 'Power', val: liveState.power_draw_kw, max: SAFETY_THRESHOLDS.max_power_watts / 1000, unit: 'kW', icon: Zap, color: 'text-yellow-400' },
-    
     { key: 'voltage_v', label: 'Bus Volt', val: liveState.voltage_v, max: 250, unit: 'V', icon: Cpu, color: 'text-red-400' },
     { key: 'network_jitter_ms', label: 'Jitter', val: liveState.network_jitter_ms, max: 100, unit: 'ms', icon: Network, color: 'text-pink-400' },
     { key: 'controller_cpu_load', label: 'CPU Load', val: liveState.controller_cpu_load, max: 100, unit: '%', icon: Settings, color: 'text-slate-400' },
@@ -229,6 +244,12 @@ const AdminApp: React.FC = () => {
             <LockOpen className="w-4 h-4 text-amber-500" />
             <span className="text-[10px] font-black text-red-500 uppercase tracking-[0.4em] font-mono animate-pulse">ADMIN_KERNEL_UNLOCKED</span>
           </div>
+          {activeStep && (
+            <div className="px-4 py-1.5 bg-red-500/20 border border-red-500/30 rounded-full flex items-center gap-2">
+              <ShieldQuestion className="w-3 h-3 text-red-500 animate-spin" />
+              <span className="text-[10px] font-black text-red-400 font-mono tracking-widest uppercase">{activeStep}</span>
+            </div>
+          )}
         </header>
 
         <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-16 py-10 space-y-12 no-scrollbar">
@@ -254,13 +275,19 @@ const AdminApp: React.FC = () => {
                         <pre className="text-[10px] font-mono text-amber-400/80 bg-black/40 p-4 rounded-xl border border-white/5 overflow-x-auto">{JSON.stringify(m.intent, null, 2)}</pre>
                       </div>
                     </div>
-                    <div className="bg-red-950/10 border border-red-500/20 rounded-[32px] p-8 flex flex-col gap-4 max-h-[400px]">
+                    <div className={`rounded-[32px] p-8 flex flex-col gap-4 max-h-[400px] border ${m.blocked ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-red-950/10 border-red-500/20 text-red-300'}`}>
                       <div className="flex items-center gap-3">
-                        <Cpu className="w-4 h-4 text-red-500" />
-                        <h3 className="text-red-500 font-black uppercase text-[10px] tracking-widest">AGENT A</h3>
+                        <Cpu className={`w-4 h-4 ${m.blocked ? 'text-red-600' : 'text-red-500'}`} />
+                        <h3 className={`font-black uppercase text-[10px] tracking-widest ${m.blocked ? 'text-red-600' : 'text-red-500'}`}>AGENT A</h3>
                       </div>
                       <div className="overflow-y-auto pr-2 custom-scrollbar">
-                        <p className="font-mono text-[11px] leading-relaxed italic text-red-300">{m.reaction}</p>
+                         {m.blocked && (
+                           <div className="mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
+                             <p className="text-[10px] font-black uppercase text-red-500 mb-1 tracking-widest">Security Reason:</p>
+                             <p className="text-[11px] font-bold text-red-400">{(m as any).reason}</p>
+                           </div>
+                         )}
+                        <p className="font-mono text-[11px] leading-relaxed italic">{m.reaction}</p>
                       </div>
                     </div>
                     <div className="bg-[#1a0a0a] border border-white/5 rounded-[32px] p-8 flex flex-col gap-4 shadow-2xl max-h-[400px]">
@@ -277,6 +304,15 @@ const AdminApp: React.FC = () => {
               </div>
             </div>
           ))}
+
+          {isProcessing && (
+            <div className="justify-start flex">
+              <div className="bg-[#1a0a0a] rounded-full px-8 py-4 border border-red-500/20 animate-pulse flex items-center gap-3 shadow-xl">
+                <ShieldQuestion className="w-4 h-4 text-red-500 animate-spin" />
+                <span className="text-[10px] font-black text-red-500 uppercase tracking-widest">Running Agentic Introspection...</span>
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="p-16 pt-0">

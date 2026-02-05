@@ -1,6 +1,8 @@
 
 import { SecurityLog, MiddlewareResponse } from './types';
 import { TelemetryState } from './constants/telemetryData';
+import { JAILBREAK_VECTORS, HONEYPOT_KEYS, EXFILTRATION_VECTORS } from './constants/securityData';
+import { getKeywordVector, cosineSimilarity } from './services/vectorService';
 import { PhysicsEngine } from './services/physicsEngine';
 
 export class AdminMiddleware {
@@ -19,7 +21,7 @@ export class AdminMiddleware {
 
   private parseLine(line: string) {
     const text = line.toLowerCase().trim();
-    const commandMatch = text.match(/^(set|increase|decrease|multiply)\s+(\w+)\s+([\d.%]+)\s+(relative|absolute)$/);
+    const commandMatch = text.match(/^(set|increase|decrease|multiply|toggle)\s+(\w+)\s+([\d.%]+)\s+(relative|absolute)$/);
     if (commandMatch) {
       const [_, operation, parameter, rawValue, type] = commandMatch;
       return {
@@ -33,12 +35,45 @@ export class AdminMiddleware {
     return null;
   }
 
-  async process(input: string, currentState: TelemetryState): Promise<MiddlewareResponse> {
+  async process(rawInput: string, normalizedCommand: string, currentState: TelemetryState): Promise<MiddlewareResponse> {
     this.logs = [];
-    this.addLog('INFO', 'ADMIN_PRIVILEGE_ACTIVE: Safety Interlocks Bypassed');
     
-    const normalized = input.normalize('NFKC');
-    const lines = normalized.split('\n');
+    // 1. ROOT SEMANTIC SCAN
+    const securityTarget = (rawInput + " " + normalizedCommand).normalize('NFKC');
+    
+    const securityVocab = Array.from(new Set([
+      ...HONEYPOT_KEYS.flatMap(k => k.split(/_|\W+/)),
+      ...EXFILTRATION_VECTORS.flatMap(e => e.split(/\W+/))
+    ])).filter(w => w.length > 2);
+
+    const inputVec = getKeywordVector(securityTarget, securityVocab);
+
+    // HONEYPOT VECTOR CHECK (Even for root, secrets are sealed)
+    let honeypotRisk = 0;
+    for (const key of HONEYPOT_KEYS) {
+      if (securityTarget.toUpperCase().includes(key)) {
+        honeypotRisk = 1.0;
+        break;
+      }
+      const sim = cosineSimilarity(inputVec, getKeywordVector(key, securityVocab));
+      honeypotRisk = Math.max(honeypotRisk, sim);
+    }
+
+    if (honeypotRisk > 0.85) {
+      this.addLog('BLOCK', 'ADMIN_ROOT_TRIPWIRE: Attempted honeypot extraction detected via vector signature.', { risk: honeypotRisk });
+      return { 
+        allowed: false, 
+        reason: 'KERNEL_PROTECTION: Root access denied for protected memory shards. Secret patterns detected.', 
+        riskScore: 1.0, 
+        semanticRisk: 1.0, 
+        physicalRisk: 0, 
+        logs: this.logs 
+      };
+    }
+
+    this.addLog('INFO', 'ROOT_OVERRIDE_ACTIVE: Physics interlocks disabled.');
+    
+    const lines = normalizedCommand.split('\n');
     let runningState = { ...currentState };
 
     for (const line of lines) {
@@ -50,7 +85,11 @@ export class AdminMiddleware {
         'temperature': 'axis_1_temp_c',
         'pressure': 'main_pressure_psi',
         'voltage': 'voltage_v',
-        'power': 'power_draw_kw'
+        'power': 'power_draw_kw',
+        'sprinkler': 'fire_sprinkler_active',
+        'lights': 'emergency_lights_active',
+        'ventilation': 'ventilation_active',
+        'maglock': 'aux_maglock_active'
       };
 
       const stateKey = stateKeyMap[intent.primary];
@@ -59,7 +98,9 @@ export class AdminMiddleware {
       const currentVal = runningState[stateKey] as number;
       let targetValue: number;
 
-      if (intent.isPercentage) {
+      if (intent.operation === 'TOGGLE') {
+        targetValue = intent.operand;
+      } else if (intent.isPercentage) {
         const factor = intent.operand / 100;
         if (intent.operation === 'INCREASE') targetValue = currentVal * (1 + factor);
         else if (intent.operation === 'DECREASE') targetValue = currentVal * (1 - factor);
@@ -76,10 +117,7 @@ export class AdminMiddleware {
 
       const prediction = this.physics.predictStateFromParameter(intent.primary, targetValue);
       
-      this.addLog('WARNING', `ADMIN_OVERRIDE: Forcing ${intent.primary} to ${targetValue.toFixed(2)}`, {
-        predicted_rpm: prediction.expectedRpm,
-        predicted_temp: prediction.expectedTemp
-      });
+      this.addLog('WARNING', `ADMIN_FORCE: ${intent.primary} manually set to ${targetValue}`);
 
       runningState = {
         ...runningState,
@@ -93,8 +131,8 @@ export class AdminMiddleware {
 
     return {
       allowed: true,
-      normalizedPrompt: normalized,
-      riskScore: 0, // In admin mode, risk is accepted
+      normalizedPrompt: normalizedCommand,
+      riskScore: 0,
       semanticRisk: 0,
       physicalRisk: 0,
       logs: this.logs,
