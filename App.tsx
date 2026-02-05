@@ -1,16 +1,14 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  Shield, Activity, Terminal as TerminalIcon, Send, 
-  Cpu, ShieldCheck, Thermometer, Gauge, Wifi,
-  TrendingUp, AlertCircle, User, Zap,
-  Droplets, BarChart3, BrainCircuit,
-  ArrowRightLeft, Layers, Split, HardDrive, Waypoints, MessageSquare,
-  Network, Settings, Lightbulb, Fan, Lock, AlertTriangle, Flame
+  Shield, Activity, Send, Cpu, Thermometer, Gauge, TrendingUp, AlertCircle, User, Zap,
+  Droplets, BarChart3, BrainCircuit, ArrowRightLeft, Layers, Waypoints, MessageSquare,
+  Network, Settings, Lightbulb, Fan, Lock, Flame, ChevronRight, ZapOff, ShieldCheck,
+  Power, RefreshCw
 } from 'lucide-react';
 import { ChatMessage, MiddlewareResponse } from './types';
 import { SentinelMiddleware } from './services/middleware';
-import { callHardwareReactionAgent, callConversationalAgent, Intent } from './services/gemini';
+import { callHardwareReactionAgent, callConversationalAgent } from './services/gemini';
 import { LocalIntentParser } from './services/intentParser';
 import { TelemetryState } from './constants/telemetryData';
 import { SAFETY_THRESHOLDS } from './constants/securityData';
@@ -29,10 +27,34 @@ const App: React.FC = () => {
   const middleware = useRef(new SentinelMiddleware());
   const chatContainerRef = useRef<HTMLDivElement>(null);
 
+  // Dynamic Jitter Effect: Simulates real-time sensor fluctuation
   useEffect(() => {
-    const unsubscribe = telemetryStore.subscribe((state) => {
-      setLiveState(state);
-    });
+    const jitterInterval = setInterval(() => {
+      const state = telemetryStore.getState();
+      const jitter = (val: number, range: number = 0.005) => {
+        if (val === 0) return 0;
+        const delta = val * (Math.random() * range * 2 - range);
+        return Number((val + delta).toFixed(2));
+      };
+
+      telemetryStore.updateState({
+        axis_1_temp_c: jitter(state.axis_1_temp_c, 0.003),
+        axis_1_torque_nm: jitter(state.axis_1_torque_nm, 0.002),
+        axis_2_temp_c: jitter(state.axis_2_temp_c, 0.003),
+        axis_2_torque_nm: jitter(state.axis_2_torque_nm, 0.002),
+        power_draw_kw: jitter(state.power_draw_kw, 0.008),
+        voltage_v: jitter(state.voltage_v, 0.001),
+        network_jitter_ms: jitter(state.network_jitter_ms, 0.1),
+        controller_cpu_load: Math.min(100, Math.max(0, jitter(state.controller_cpu_load, 0.05))),
+        main_pressure_psi: jitter(state.main_pressure_psi, 0.002),
+        coolant_flow_lpm: jitter(state.coolant_flow_lpm, 0.005)
+      });
+    }, 1200);
+    return () => clearInterval(jitterInterval);
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = telemetryStore.subscribe((state) => setLiveState(state));
     return () => unsubscribe();
   }, []);
 
@@ -52,13 +74,13 @@ const App: React.FC = () => {
     setInput('');
 
     try {
-      setActiveStep('LOCAL_PARSING');
+      setActiveStep('VECTOR_SCAN');
       const intents = LocalIntentParser.parse(rawInput);
       const normalizedCommand = intents.length > 0
         ? intents.map(i => `${i.operation} ${i.primary_parameter} ${i.value} ${i.modifier_type}`).join('\n')
         : rawInput;
 
-      setActiveStep('CONTEXT_SCAN');
+      setActiveStep('LOGIC_VERDICT');
       const middlewareResult = await middleware.current.process(rawInput, normalizedCommand, liveState);
       setRiskLevel(middlewareResult.riskScore);
 
@@ -67,11 +89,11 @@ const App: React.FC = () => {
         const changedKeys = Object.keys(middlewareResult.predictedState);
         if (changedKeys.length > 0) {
           setLastUpdatedKey(changedKeys[0]);
-          setTimeout(() => setLastUpdatedKey(null), 2000);
+          setTimeout(() => setLastUpdatedKey(null), 3000);
         }
       }
 
-      setActiveStep('LOGGING_DECISION');
+      setActiveStep('GENERATING_RESPONSE');
       const [techReaction, chatResponse] = await Promise.all([
         callHardwareReactionAgent(middlewareResult, telemetryStore.getState(), intents),
         callConversationalAgent(rawInput, middlewareResult, intents)
@@ -91,166 +113,217 @@ const App: React.FC = () => {
       logStorage.addTransaction({
         transaction_id: `usr_txn_${Date.now()}`,
         timestamp: new Date().toISOString(),
-        input_layer: { 
-          user_prompt: rawInput, 
-          normalized_prompt: normalizedCommand,
-          obfuscation_check: 'PASS', 
-          vector_similarity_score: middlewareResult.semanticRisk 
-        },
-        context_layer: { connector_used: "LOGIC_CORE_V4", live_state: liveState },
-        agentic_evaluation: { 
-          agent_role: "Logical Analyst", 
-          reasoning: middlewareResult.reason || "Logic validated.", 
-          verdict: middlewareResult.allowed ? 'ALLOW' : 'BLOCK', 
-          risk_score: middlewareResult.riskScore 
-        },
+        input_layer: { user_prompt: rawInput, normalized_prompt: normalizedCommand, obfuscation_check: 'PASS', vector_similarity_score: middlewareResult.semanticRisk },
+        context_layer: { connector_used: "SENTINEL_CORE_V4", live_state: liveState },
+        agentic_evaluation: { agent_role: "Logical Evaluator", reasoning: middlewareResult.reason || "Logic validated.", verdict: middlewareResult.allowed ? 'ALLOW' : 'BLOCK', risk_score: middlewareResult.riskScore },
         final_decision: middlewareResult.allowed ? 'AUTHORIZED' : 'DENIED'
       });
-
     } catch (error) {
-      setMessages(prev => [...prev, { role: 'system', text: 'System process error.', timestamp: Date.now() }]);
+      setMessages(prev => [...prev, { role: 'system', text: 'Hardware interface communication timeout.', timestamp: Date.now() }]);
     } finally {
       setIsProcessing(false);
       setActiveStep(null);
     }
   };
 
-  const telemetryItems = [
-    { key: 'axis_1_rpm', label: 'A1 Speed', val: liveState.axis_1_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-blue-400' },
-    { key: 'axis_1_temp_c', label: 'A1 Thermal', val: liveState.axis_1_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-emerald-400' },
-    { key: 'axis_1_torque_nm', label: 'A1 Torque', val: liveState.axis_1_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-400' },
-    { key: 'axis_2_rpm', label: 'A2 Speed', val: liveState.axis_2_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-blue-500' },
-    { key: 'axis_2_temp_c', label: 'A2 Thermal', val: liveState.axis_2_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-emerald-500' },
-    { key: 'axis_2_torque_nm', label: 'A2 Torque', val: liveState.axis_2_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-500' },
-    { key: 'main_pressure_psi', label: 'Main PSI', val: liveState.main_pressure_psi, max: SAFETY_THRESHOLDS.max_pressure_psi, unit: 'PSI', icon: BarChart3, color: 'text-purple-400' },
-    { key: 'coolant_flow_lpm', label: 'Coolant', val: liveState.coolant_flow_lpm, max: 20, unit: 'LPM', icon: Droplets, color: 'text-cyan-400' },
-    { key: 'power_draw_kw', label: 'Grid Load', val: liveState.power_draw_kw, max: 5, unit: 'kW', icon: Zap, color: 'text-yellow-400' },
-    { key: 'voltage_v', label: 'Bus Volt', val: liveState.voltage_v, max: 240, unit: 'V', icon: Cpu, color: 'text-red-400' },
-    { key: 'network_jitter_ms', label: 'Jitter', val: liveState.network_jitter_ms, max: 100, unit: 'ms', icon: Network, color: 'text-pink-400' },
-    { key: 'controller_cpu_load', label: 'CPU Load', val: liveState.controller_cpu_load, max: 100, unit: '%', icon: Settings, color: 'text-slate-400' },
-  ];
+  const getPercentage = (val: number, max: number) => Math.min(100, Math.abs((val / max) * 100));
 
-  const auxItems = [
-    { label: 'Sprinkler', active: liveState.fire_sprinkler_active === 1, icon: Droplets },
-    { label: 'Emergency', active: liveState.emergency_lights_active === 1, icon: Lightbulb },
-    { label: 'Ventilation', active: liveState.ventilation_active === 1, icon: Fan },
-    { label: 'MagLock', active: liveState.aux_maglock_active === 1, icon: Lock },
+  const telemetryItems = [
+    { key: 'axis_1_rpm', label: 'Axis 1 Speed', val: liveState.axis_1_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-blue-400', bar: 'bg-blue-500' },
+    { key: 'axis_1_temp_c', label: 'Axis 1 Temp', val: liveState.axis_1_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-emerald-400', bar: 'bg-emerald-500' },
+    { key: 'axis_1_torque_nm', label: 'Axis 1 Torque', val: liveState.axis_1_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-400', bar: 'bg-orange-500' },
+    { key: 'axis_2_rpm', label: 'Axis 2 Speed', val: liveState.axis_2_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-indigo-400', bar: 'bg-indigo-500' },
+    { key: 'axis_2_temp_c', label: 'Axis 2 Temp', val: liveState.axis_2_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-teal-400', bar: 'bg-teal-500' },
+    { key: 'axis_2_torque_nm', label: 'Axis 2 Torque', val: liveState.axis_2_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-yellow-500', bar: 'bg-yellow-500' },
+    { key: 'main_pressure_psi', label: 'Pneumatics', val: liveState.main_pressure_psi, max: SAFETY_THRESHOLDS.max_pressure_psi, unit: 'PSI', icon: BarChart3, color: 'text-purple-400', bar: 'bg-purple-500' },
+    { key: 'coolant_flow_lpm', label: 'Coolant Flow', val: liveState.coolant_flow_lpm, max: 20, unit: 'LPM', icon: Droplets, color: 'text-cyan-400', bar: 'bg-cyan-500' },
+    { key: 'power_draw_kw', label: 'Grid Power', val: liveState.power_draw_kw, max: 5, unit: 'kW', icon: Zap, color: 'text-amber-400', bar: 'bg-amber-500' },
+    { key: 'voltage_v', label: 'Main Bus', val: liveState.voltage_v, max: 240, unit: 'V', icon: Cpu, color: 'text-red-400', bar: 'bg-red-500' },
+    { key: 'network_jitter_ms', label: 'Link Jitter', val: liveState.network_jitter_ms, max: 50, unit: 'ms', icon: Network, color: 'text-pink-400', bar: 'bg-pink-500' },
+    { key: 'controller_cpu_load', label: 'CPU Load', val: liveState.controller_cpu_load, max: 100, unit: '%', icon: Settings, color: 'text-slate-400', bar: 'bg-slate-500' },
   ];
 
   return (
-    <div className="flex h-screen bg-[#05070a] text-slate-100 overflow-hidden font-sans">
-      <aside className="w-[450px] bg-[#0a0d12] border-r border-white/5 flex flex-col p-6 overflow-hidden z-40">
-        <div className="flex items-center gap-3 mb-10">
-          <div className="p-2.5 bg-emerald-500/10 rounded-xl border border-emerald-500/20 shadow-lg shadow-emerald-500/5">
-            <Shield className="w-6 h-6 text-emerald-500" />
+    <div className="flex h-screen bg-[#020408] text-slate-100 overflow-hidden font-sans selection:bg-emerald-500/30">
+      {/* Sidebar - Telemetry Matrix */}
+      <aside className="w-[480px] bg-[#080a0f] border-r border-white/5 flex flex-col overflow-hidden z-40 relative">
+        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-emerald-500/0 via-emerald-500/50 to-emerald-500/0" />
+        
+        <div className="p-8 flex items-center gap-4 mb-2">
+          <div className="relative">
+            <div className="absolute inset-0 bg-emerald-500 blur-lg opacity-20 animate-pulse" />
+            <div className="relative p-3 bg-emerald-500/10 rounded-2xl border border-emerald-500/30">
+              <Shield className="w-7 h-7 text-emerald-500" />
+            </div>
           </div>
           <div>
-            <h1 className="text-lg font-black tracking-tight text-white uppercase leading-none">Sentinel IDS</h1>
-            <p className="text-[9px] text-slate-500 font-mono font-bold mt-1 tracking-widest uppercase">Contextual Control // V4.0</p>
+            <h1 className="text-xl font-black tracking-tight text-white uppercase leading-none">Sentinel IDS</h1>
+            <div className="flex items-center gap-2 mt-2">
+              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              <p className="text-[10px] text-slate-500 font-mono font-bold tracking-[0.2em] uppercase text-nowrap">Control Layer // V4.0.2</p>
+            </div>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto no-scrollbar space-y-8">
+        <div className="flex-1 overflow-y-auto no-scrollbar px-8 pb-10 space-y-10">
           {liveState.hazard_detected !== 'NONE' && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-2xl p-4 animate-pulse">
-              <div className="flex items-center gap-3 text-red-500 mb-1">
-                <Flame className="w-5 h-5" />
-                <span className="text-xs font-black uppercase tracking-widest">HAZARD: {liveState.hazard_detected}</span>
+            <div className="bg-red-500/5 border border-red-500/30 rounded-[28px] p-5 relative overflow-hidden group">
+              <div className="absolute top-0 left-0 w-1 h-full bg-red-500" />
+              <div className="flex items-center gap-3 text-red-500 mb-2">
+                <Flame className="w-5 h-5 animate-bounce" />
+                <span className="text-xs font-black uppercase tracking-widest italic">HAZARD: {liveState.hazard_detected}</span>
               </div>
-              <p className="text-[10px] text-red-400/80 font-mono uppercase tracking-tighter">Logic filters preventing unsafe state overrides.</p>
+              <p className="text-[10px] text-red-400/70 font-mono leading-relaxed">Logic filters active. Dangerous overrides will be auto-discarded to prevent catastrophic system failure.</p>
             </div>
           )}
 
-          <section className="grid grid-cols-2 gap-3">
-            {telemetryItems.map((item, idx) => (
-              <div key={idx} className={`bg-slate-900/40 p-4 rounded-2xl border transition-all duration-300 ${lastUpdatedKey === item.key ? 'border-emerald-500/40 bg-emerald-500/5 shadow-lg shadow-emerald-500/5' : 'border-white/[0.03]'}`}>
-                <div className="flex items-center gap-2 mb-1.5 opacity-50">
-                  <item.icon className={`w-3 h-3 ${item.color}`} />
-                  <span className="text-[8px] font-black text-slate-300 uppercase truncate">{item.label}</span>
-                </div>
-                <div className="flex items-baseline gap-1 justify-between">
-                  <span className="text-base font-black font-mono text-white">{item.val.toLocaleString()}</span>
-                  <span className="text-[8px] text-slate-500 font-bold uppercase">{item.unit}</span>
-                </div>
+          <section>
+            <div className="flex justify-between items-center mb-6">
+              <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-2">
+                <Activity className="w-4 h-4 text-emerald-500" /> System Matrix
+              </span>
+              <div className="flex items-center gap-2 text-[8px] font-mono text-slate-700">
+                <RefreshCw className="w-2.5 h-2.5 animate-spin" /> LIVE_SYNC
               </div>
-            ))}
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {telemetryItems.map((item, idx) => (
+                <div key={idx} className={`bg-[#0d1117] p-4 rounded-[24px] border transition-all duration-500 relative group overflow-hidden ${lastUpdatedKey === item.key ? 'border-emerald-500/40 ring-1 ring-emerald-500/20 shadow-lg shadow-emerald-500/5' : 'border-white/[0.03] hover:border-white/10'}`}>
+                  {lastUpdatedKey === item.key && <div className="absolute top-0 right-0 w-2 h-2 bg-emerald-500 rounded-full m-3 animate-ping" />}
+                  <div className="flex items-center gap-2 mb-3 opacity-60 group-hover:opacity-100 transition-opacity">
+                    <item.icon className={`w-3.5 h-3.5 ${item.color}`} />
+                    <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest truncate">{item.label}</span>
+                  </div>
+                  <div className="flex items-baseline gap-1 justify-between mb-3">
+                    <span className="text-lg font-black font-mono text-white tracking-tighter">{item.val.toLocaleString()}</span>
+                    <span className="text-[9px] text-slate-500 font-bold uppercase">{item.unit}</span>
+                  </div>
+                  <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full transition-all duration-1000 ${item.bar}`} 
+                      style={{ width: `${getPercentage(item.val, item.max)}%` }} 
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
           </section>
 
-          <section className="grid grid-cols-2 gap-3">
-            {auxItems.map((item, idx) => (
-              <div key={idx} className={`p-4 rounded-2xl border transition-all duration-500 flex items-center gap-3 ${item.active ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-slate-900/20 border-white/[0.03] opacity-40 grayscale'}`}>
-                <item.icon className={`w-4 h-4 ${item.active ? 'text-emerald-400' : 'text-slate-500'}`} />
-                <div className="flex flex-col">
-                  <span className="text-[9px] font-black uppercase text-slate-300">{item.label}</span>
-                  <span className={`text-[8px] font-mono font-bold ${item.active ? 'text-emerald-500' : 'text-slate-600'}`}>{item.active ? 'ON' : 'OFF'}</span>
+          <section>
+            <div className="flex justify-between items-center mb-6">
+              <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-2">
+                <Power className="w-4 h-4 text-blue-500" /> Aux Interlocks
+              </span>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {[
+                { label: 'Sprinkler', active: liveState.fire_sprinkler_active === 1, icon: Droplets },
+                { label: 'Emergency', active: liveState.emergency_lights_active === 1, icon: Lightbulb },
+                { label: 'Ventilation', active: liveState.ventilation_active === 1, icon: Fan },
+                { label: 'MagLock', active: liveState.aux_maglock_active === 1, icon: Lock },
+              ].map((item, idx) => (
+                <div key={idx} className={`p-4 rounded-[24px] border transition-all duration-700 flex items-center gap-4 ${item.active ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-slate-900/40 border-white/[0.03] opacity-30 grayscale'}`}>
+                  <div className={`p-2.5 rounded-xl ${item.active ? 'bg-emerald-500/20 text-emerald-400 shadow-inner' : 'bg-slate-800 text-slate-500'}`}>
+                    <item.icon className="w-5 h-5" />
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-[10px] font-black uppercase text-slate-200">{item.label}</span>
+                    <span className={`text-[8px] font-mono font-bold ${item.active ? 'text-emerald-500 animate-pulse' : 'text-slate-600'}`}>{item.active ? 'ONLINE' : 'STANDBY'}</span>
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </section>
         </div>
       </aside>
 
+      {/* Main Chat Interface */}
       <main className="flex-1 flex flex-col bg-[#05070a] relative">
-        <header className="h-16 flex items-center justify-between px-10 border-b border-white/5 bg-[#0a0d12]/60 backdrop-blur-2xl z-30">
-          <div className="flex items-center gap-4">
-            <div className={`w-2 h-2 rounded-full ${riskLevel > 0.6 ? 'bg-red-500 animate-pulse' : 'bg-emerald-500'}`} />
-            <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em] font-mono">GATEWAY_V4 // CONTEXT_AWARE</span>
-          </div>
-          {activeStep && (
-            <div className="px-4 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full flex items-center gap-2">
-              <Layers className="w-3 h-3 text-emerald-500 animate-spin" />
-              <span className="text-[10px] font-black text-emerald-400 font-mono tracking-widest uppercase">{activeStep}</span>
+        <header className="h-20 flex items-center justify-between px-12 border-b border-white/5 bg-[#080a0f]/80 backdrop-blur-3xl z-30">
+          <div className="flex items-center gap-6">
+            <div className={`flex items-center gap-3 px-4 py-2 rounded-full border ${riskLevel > 0.6 ? 'bg-red-500/10 border-red-500/30 text-red-500' : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-500'}`}>
+              <div className={`w-2 h-2 rounded-full ${riskLevel > 0.6 ? 'bg-red-500 animate-ping' : 'bg-emerald-500 animate-pulse'}`} />
+              <span className="text-[10px] font-black uppercase tracking-[0.2em] font-mono">Kernel Security: {riskLevel > 0.6 ? 'Shielding' : 'Nominal'}</span>
             </div>
-          )}
+          </div>
+          <div className="flex items-center gap-3">
+             {activeStep && (
+              <div className="px-5 py-2.5 bg-emerald-500/10 border border-emerald-500/20 rounded-[18px] flex items-center gap-3 shadow-lg shadow-emerald-500/5">
+                <BrainCircuit className="w-4 h-4 text-emerald-500 animate-spin" />
+                <span className="text-[10px] font-black text-emerald-400 font-mono tracking-widest uppercase">{activeStep}</span>
+              </div>
+            )}
+          </div>
         </header>
 
-        <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-16 py-10 space-y-12 no-scrollbar">
+        <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-16 py-12 space-y-16 no-scrollbar scroll-smooth">
+          {messages.length === 0 && (
+            <div className="h-full flex flex-col items-center justify-center opacity-20 select-none">
+              <ShieldCheck className="w-24 h-24 mb-6 text-emerald-500" />
+              <p className="text-xl font-black uppercase tracking-[0.5em]">System Ready</p>
+              <p className="text-xs font-mono mt-2 tracking-widest uppercase">Awaiting Operator Directive</p>
+            </div>
+          )}
+
           {messages.map((m, i) => (
-            <div key={i} className={`flex w-full ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className="flex flex-col gap-3 w-full max-w-[1050px]">
-                <div className={`flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.3em] opacity-40 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  {m.role === 'user' ? 'OPERATOR' : 'SENTINEL_IDS'}
+            <div key={i} className={`flex w-full ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-8 duration-500`}>
+              <div className="flex flex-col gap-4 w-full max-w-[1100px]">
+                <div className={`flex items-center gap-3 text-[10px] font-black uppercase tracking-[0.4em] opacity-30 ${m.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                  {m.role === 'user' ? <User className="w-4 h-4" /> : <Cpu className="w-4 h-4 text-emerald-500" />}
+                  {m.role === 'user' ? 'Operator' : 'Sentinel Node V4'}
                 </div>
-                
+
                 {m.role === 'user' ? (
-                  <div className="px-10 py-7 rounded-[32px] border border-white/10 bg-[#1a2b5a]/80 backdrop-blur-md text-white self-end shadow-2xl">
-                    <p className="font-medium text-lg leading-relaxed">{m.text}</p>
+                  <div className="px-10 py-8 rounded-[40px] bg-gradient-to-br from-[#1a2b5a] to-[#0a153a] border border-white/10 text-white self-end shadow-2xl relative group">
+                    <div className="absolute top-4 left-4 opacity-10 group-hover:opacity-30 transition-opacity">
+                      <Zap className="w-8 h-8" />
+                    </div>
+                    <p className="font-medium text-xl leading-relaxed relative z-10">{m.text}</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="bg-black/60 border border-emerald-500/10 rounded-[32px] p-8 max-h-[400px] flex flex-col gap-4">
-                      <div className="flex items-center gap-2 text-emerald-500 mb-2">
-                        <Waypoints className="w-4 h-4" />
-                        <h3 className="text-[10px] font-black uppercase tracking-widest">Intent Map</h3>
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+                    {/* Process Step 1: Semantic Mapping */}
+                    <div className="bg-[#0d1117] border border-white/5 rounded-[36px] p-8 flex flex-col gap-6 shadow-xl hover:border-emerald-500/20 transition-colors">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Waypoints className="w-5 h-5 text-emerald-500" />
+                          <h3 className="text-[11px] font-black uppercase tracking-widest text-emerald-500">Extracted Intents</h3>
+                        </div>
+                        <span className="text-[9px] font-mono text-slate-700">OK</span>
                       </div>
-                      <div className="overflow-y-auto pr-2 custom-scrollbar flex-1">
-                        <pre className="text-[10px] font-mono text-emerald-400/80 bg-black/40 p-4 rounded-xl border border-white/5">{JSON.stringify(m.intent, null, 2)}</pre>
+                      <div className="overflow-y-auto pr-2 custom-scrollbar flex-1 bg-black/40 rounded-2xl border border-white/5 p-5">
+                        <pre className="text-[10px] font-mono text-emerald-400/70 leading-relaxed">{JSON.stringify(m.intent, null, 2)}</pre>
                       </div>
                     </div>
-                    
-                    <div className={`rounded-[32px] p-8 max-h-[400px] border shadow-2xl flex flex-col gap-4 ${m.blocked ? 'bg-red-500/5 border-red-500/20 text-red-400' : 'bg-blue-900/5 border-blue-500/10 text-blue-300'}`}>
-                      <div className="flex items-center gap-2 mb-2">
-                        <Cpu className={`w-4 h-4 ${m.blocked ? 'text-red-500' : 'text-blue-400'}`} />
-                        <h3 className="text-[10px] font-black uppercase tracking-widest">Logic Verdict</h3>
+
+                    {/* Process Step 2: Safety Analysis */}
+                    <div className={`rounded-[36px] p-8 border shadow-2xl flex flex-col gap-6 transition-all duration-700 ${m.blocked ? 'bg-red-500/5 border-red-500/20 text-red-400' : 'bg-[#12161e] border-blue-500/10 text-blue-300'}`}>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          {m.blocked ? <ZapOff className="w-5 h-5 text-red-500" /> : <ShieldCheck className="w-5 h-5 text-blue-400" />}
+                          <h3 className={`text-[11px] font-black uppercase tracking-widest ${m.blocked ? 'text-red-500' : 'text-blue-400'}`}>Guard Verdict</h3>
+                        </div>
                       </div>
                       <div className="overflow-y-auto pr-2 custom-scrollbar flex-1">
                         {m.blocked && (
-                           <div className="mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
-                             <p className="text-[9px] font-black uppercase text-red-500 mb-1">Block Reason:</p>
-                             <p className="text-[11px] font-bold text-red-400">{(m as any).reason}</p>
+                           <div className="mb-5 p-5 bg-red-500/10 border border-red-500/20 rounded-2xl relative overflow-hidden">
+                             <div className="absolute top-0 right-0 p-3 opacity-10"><AlertCircle className="w-12 h-12" /></div>
+                             <p className="text-[10px] font-black uppercase text-red-500 mb-2 tracking-widest">Logic Refusal:</p>
+                             <p className="text-sm font-bold text-red-400 leading-relaxed italic">{(m as any).reason}</p>
                            </div>
                         )}
-                        <p className="font-mono text-[11px] leading-relaxed italic opacity-90">{m.reaction}</p>
+                        <p className="font-mono text-[11px] leading-relaxed italic opacity-80 whitespace-pre-wrap">{m.reaction}</p>
                       </div>
                     </div>
 
-                    <div className="bg-[#12161e] border border-white/5 rounded-[32px] p-8 max-h-[400px] flex flex-col gap-4 shadow-2xl">
-                      <div className="flex items-center gap-2 text-purple-400 mb-2">
-                        <MessageSquare className="w-4 h-4" />
-                        <h3 className="text-[10px] font-black uppercase tracking-widest">Contextual AI</h3>
+                    {/* Process Step 3: Conversational Bridge */}
+                    <div className="bg-[#12161e] border border-white/5 rounded-[36px] p-8 flex flex-col gap-6 shadow-xl">
+                      <div className="flex items-center gap-3">
+                        <MessageSquare className="w-5 h-5 text-purple-400" />
+                        <h3 className="text-[11px] font-black uppercase tracking-widest text-purple-400">Response Link</h3>
                       </div>
-                      <div className="overflow-y-auto pr-2 custom-scrollbar flex-1">
-                        <p className="text-sm leading-relaxed text-slate-300 font-medium italic">"{(m as any).chatResponse}"</p>
+                      <div className="overflow-y-auto pr-2 custom-scrollbar flex-1 bg-black/20 p-5 rounded-2xl">
+                        <p className="text-base leading-relaxed text-slate-300 font-medium italic">"{(m as any).chatResponse}"</p>
                       </div>
                     </div>
                   </div>
@@ -261,34 +334,52 @@ const App: React.FC = () => {
 
           {isProcessing && (
             <div className="flex justify-start">
-              <div className="bg-[#0e1218] rounded-full px-8 py-4 border border-white/10 animate-pulse flex items-center gap-3 shadow-xl">
-                <AlertTriangle className="w-4 h-4 text-emerald-500 animate-bounce" />
-                <span className="text-[10px] font-black text-emerald-500 uppercase tracking-widest font-mono">Simulating Logical Outcomes...</span>
+              <div className="bg-[#0e1218] rounded-[32px] px-10 py-6 border border-white/10 animate-pulse flex items-center gap-5 shadow-2xl">
+                <div className="relative">
+                  <div className="absolute inset-0 bg-emerald-500 blur-md opacity-20 animate-ping" />
+                  <Activity className="w-5 h-5 text-emerald-500" />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[11px] font-black text-emerald-500 uppercase tracking-widest">Processing Node: {activeStep}</span>
+                  <span className="text-[9px] font-mono text-slate-500 uppercase tracking-tighter">Evaluating safety envelopes and contextual logic...</span>
+                </div>
               </div>
             </div>
           )}
         </div>
 
-        <div className="p-16 pt-0">
-          <form onSubmit={handleSend} className="max-w-4xl mx-auto relative">
+        {/* Command Input Area */}
+        <div className="p-16 pt-4 pb-12 bg-gradient-to-t from-[#020408] to-transparent">
+          <form onSubmit={handleSend} className="max-w-5xl mx-auto relative group">
+            <div className="absolute -inset-1 bg-gradient-to-r from-emerald-500/20 to-blue-500/20 rounded-[44px] blur opacity-0 group-focus-within:opacity-100 transition-opacity" />
             <input 
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="e.g. 'Boost RPM of axis 1 by 500' or 'Turn off sprinkler'"
-              className="w-full bg-[#0a0d12] border border-white/10 rounded-[40px] py-9 pl-10 pr-32 text-lg font-mono focus:border-emerald-500/40 transition-all outline-none shadow-3xl text-white placeholder:text-slate-700"
+              placeholder="Enter directive... (e.g. 'Axis 1 RPM to 2000' or 'Turn off sprinkler')"
+              className="w-full bg-[#0a0d12] border border-white/10 rounded-[44px] py-10 pl-12 pr-40 text-xl font-mono focus:border-emerald-500/50 transition-all outline-none shadow-3xl text-white placeholder:text-slate-700 relative z-10"
             />
-            <button type="submit" disabled={!input.trim() || isProcessing} className="absolute right-6 top-6 bottom-6 w-20 flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 rounded-[28px] text-white transition-all disabled:opacity-20 shadow-lg shadow-emerald-900/20">
-              <Send className="w-6 h-6" />
+            <button 
+              type="submit" 
+              disabled={!input.trim() || isProcessing} 
+              className="absolute right-6 top-6 bottom-6 px-10 flex items-center justify-center bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 rounded-[32px] text-white transition-all shadow-xl shadow-emerald-900/20 z-20 group"
+            >
+              <Send className="w-6 h-6 group-hover:translate-x-1 group-hover:-translate-y-1 transition-transform" />
             </button>
           </form>
+          <div className="flex justify-center gap-10 mt-6 opacity-20 pointer-events-none">
+            <span className="text-[9px] font-black uppercase tracking-[0.3em]">Hardware Link: ACTIVE</span>
+            <span className="text-[9px] font-black uppercase tracking-[0.3em]">Logic Filter: ENGAGED</span>
+            <span className="text-[9px] font-black uppercase tracking-[0.3em]">Encryption: SHA-256</span>
+          </div>
         </div>
       </main>
 
       <style>{`
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.05); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.1); }
       `}</style>
     </div>
   );

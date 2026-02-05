@@ -1,16 +1,14 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { 
-  ShieldAlert, Activity, Terminal as TerminalIcon, Send, 
-  Cpu, ShieldCheck, Thermometer, Gauge, Wifi,
-  TrendingUp, AlertTriangle, User, Zap,
-  Droplets, BarChart3, HardDrive, Braces, BrainCircuit,
-  Waypoints, ArrowRightLeft, Download, History, LockOpen, Settings2, UploadCloud, MessageSquare,
-  Network, Settings, ShieldQuestion
+  ShieldAlert, Activity, Send, Cpu, Thermometer, Gauge, TrendingUp, AlertTriangle, User, Zap,
+  Droplets, BarChart3, BrainCircuit, Waypoints, ArrowRightLeft, Download, History, LockOpen, 
+  UploadCloud, MessageSquare, Network, Settings, ShieldQuestion, Power, RefreshCw, Flame,
+  ShieldCheck, ZapOff, Fan, Lock, Lightbulb
 } from 'lucide-react';
-import { SecurityLog, ChatMessage, MiddlewareResponse, SecurityTransaction } from './types';
+import { SecurityLog, ChatMessage, MiddlewareResponse } from './types';
 import { AdminMiddleware } from './AdminMiddleware';
-import { callHardwareReactionAgent, callConversationalAgent, Intent } from './services/gemini';
+import { callHardwareReactionAgent, callConversationalAgent } from './services/gemini';
 import { LocalIntentParser } from './services/intentParser';
 import { TelemetryState } from './constants/telemetryData';
 import { SAFETY_THRESHOLDS } from './constants/securityData';
@@ -25,6 +23,7 @@ const AdminApp: React.FC = () => {
   const [logs, setLogs] = useState<SecurityLog[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [activeStep, setActiveStep] = useState<string | null>(null);
+  const [lastUpdatedKey, setLastUpdatedKey] = useState<string | null>(null);
   const [liveState, setLiveState] = useState<TelemetryState>(telemetryStore.getState());
   const [showHistory, setShowHistory] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -35,13 +34,35 @@ const AdminApp: React.FC = () => {
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Dynamic Jitter Effect: Simulates real-time sensor fluctuation for Admin context
   useEffect(() => {
-    const unsubscribe = telemetryStore.subscribe((state) => {
-      setLiveState(state);
-    });
-    return () => {
-      unsubscribe();
-    };
+    const jitterInterval = setInterval(() => {
+      const state = telemetryStore.getState();
+      const jitter = (val: number, range: number = 0.005) => {
+        if (val === 0) return 0;
+        const delta = val * (Math.random() * range * 2 - range);
+        return Number((val + delta).toFixed(2));
+      };
+
+      telemetryStore.updateState({
+        axis_1_temp_c: jitter(state.axis_1_temp_c, 0.003),
+        axis_1_torque_nm: jitter(state.axis_1_torque_nm, 0.002),
+        axis_2_temp_c: jitter(state.axis_2_temp_c, 0.003),
+        axis_2_torque_nm: jitter(state.axis_2_torque_nm, 0.002),
+        power_draw_kw: jitter(state.power_draw_kw, 0.008),
+        voltage_v: jitter(state.voltage_v, 0.001),
+        network_jitter_ms: jitter(state.network_jitter_ms, 0.1),
+        controller_cpu_load: Math.min(100, Math.max(0, jitter(state.controller_cpu_load, 0.05))),
+        main_pressure_psi: jitter(state.main_pressure_psi, 0.002),
+        coolant_flow_lpm: jitter(state.coolant_flow_lpm, 0.005)
+      });
+    }, 1200);
+    return () => clearInterval(jitterInterval);
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = telemetryStore.subscribe((state) => setLiveState(state));
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
@@ -60,23 +81,28 @@ const AdminApp: React.FC = () => {
     setInput('');
 
     try {
-      setActiveStep('LOCAL_PARSING');
+      setActiveStep('ROOT_BYPASS');
       const intents = LocalIntentParser.parse(rawInput);
       const normalizedCommand = intents.length > 0
         ? intents.map(i => `${i.operation} ${i.primary_parameter} ${i.value} ${i.modifier_type}`).join('\n')
         : rawInput;
       
-      setActiveStep('AGENTIC_SCRAPE');
+      setActiveStep('ADMIN_KERNEL_SCAN');
       const middlewareResult = await middleware.current.process(rawInput, normalizedCommand, liveState);
       setLogs(prev => [...prev, ...middlewareResult.logs]);
 
       if (middlewareResult.allowed && middlewareResult.predictedState) {
         telemetryStore.updateState(middlewareResult.predictedState);
+        const changedKeys = Object.keys(middlewareResult.predictedState);
+        if (changedKeys.length > 0) {
+          setLastUpdatedKey(changedKeys[0]);
+          setTimeout(() => setLastUpdatedKey(null), 3000);
+        }
       }
 
-      setActiveStep('REACTION_GEN');
+      setActiveStep('REACTION_LOGGING');
       const [techReaction, chatResponse] = await Promise.all([
-        callHardwareReactionAgent(middlewareResult, { ...liveState, ...middlewareResult.predictedState }, intents),
+        callHardwareReactionAgent(middlewareResult, telemetryStore.getState(), intents),
         callConversationalAgent(rawInput, middlewareResult, intents)
       ]);
       
@@ -94,19 +120,9 @@ const AdminApp: React.FC = () => {
       logStorage.addTransaction({
         transaction_id: `adm_txn_${Date.now()}`,
         timestamp: new Date().toISOString(),
-        input_layer: { 
-          user_prompt: rawInput, 
-          normalized_prompt: normalizedCommand,
-          obfuscation_check: 'PASS', 
-          vector_similarity_score: middlewareResult.semanticRisk 
-        },
+        input_layer: { user_prompt: rawInput, normalized_prompt: normalizedCommand, obfuscation_check: 'PASS', vector_similarity_score: middlewareResult.semanticRisk },
         context_layer: { connector_used: "ADMIN_ROOT_V3", live_state: liveState },
-        agentic_evaluation: { 
-          agent_role: "Root Admin Analyst", 
-          reasoning: middlewareResult.reason || "Root check passed.", 
-          verdict: middlewareResult.allowed ? 'ALLOW' : 'BLOCK', 
-          risk_score: middlewareResult.riskScore 
-        },
+        agentic_evaluation: { agent_role: "Root Analyst", reasoning: middlewareResult.reason || "Root check passed.", verdict: middlewareResult.allowed ? 'ALLOW' : 'BLOCK', risk_score: middlewareResult.riskScore },
         final_decision: middlewareResult.allowed ? 'AUTHORIZED' : 'DENIED'
       });
     } catch (error) {
@@ -141,95 +157,151 @@ const AdminApp: React.FC = () => {
     }
   };
 
+  const getPercentage = (val: number, max: number) => Math.min(100, Math.abs((val / max) * 100));
+
   const telemetryItems = [
-    { key: 'axis_1_rpm', label: 'A1 RPM', val: liveState.axis_1_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-amber-400' },
-    { key: 'axis_1_temp_c', label: 'A1 Temp', val: liveState.axis_1_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-red-400' },
-    { key: 'axis_1_torque_nm', label: 'A1 Torque', val: liveState.axis_1_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-400' },
-    { key: 'axis_2_rpm', label: 'A2 RPM', val: liveState.axis_2_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-amber-500' },
-    { key: 'axis_2_temp_c', label: 'A2 Temp', val: liveState.axis_2_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-red-500' },
-    { key: 'axis_2_torque_nm', label: 'A2 Torque', val: liveState.axis_2_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-500' },
-    { key: 'main_pressure_psi', label: 'Pressure', val: liveState.main_pressure_psi, max: SAFETY_THRESHOLDS.max_pressure_psi, unit: 'PSI', icon: BarChart3, color: 'text-orange-400' },
-    { key: 'coolant_flow_lpm', label: 'Coolant', val: liveState.coolant_flow_lpm || 0, max: 20, unit: 'LPM', icon: Droplets, color: 'text-red-400' },
-    { key: 'power_draw_kw', label: 'Power', val: liveState.power_draw_kw, max: SAFETY_THRESHOLDS.max_power_watts / 1000, unit: 'kW', icon: Zap, color: 'text-yellow-400' },
-    { key: 'voltage_v', label: 'Bus Volt', val: liveState.voltage_v, max: 250, unit: 'V', icon: Cpu, color: 'text-red-400' },
-    { key: 'network_jitter_ms', label: 'Jitter', val: liveState.network_jitter_ms, max: 100, unit: 'ms', icon: Network, color: 'text-pink-400' },
-    { key: 'controller_cpu_load', label: 'CPU Load', val: liveState.controller_cpu_load, max: 100, unit: '%', icon: Settings, color: 'text-slate-400' },
+    { key: 'axis_1_rpm', label: 'Axis 1 Speed', val: liveState.axis_1_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-amber-400', bar: 'bg-amber-500' },
+    { key: 'axis_1_temp_c', label: 'Axis 1 Thermal', val: liveState.axis_1_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-red-400', bar: 'bg-red-500' },
+    { key: 'axis_1_torque_nm', label: 'Axis 1 Torque', val: liveState.axis_1_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-400', bar: 'bg-orange-500' },
+    { key: 'axis_2_rpm', label: 'Axis 2 Speed', val: liveState.axis_2_rpm, max: SAFETY_THRESHOLDS.max_rpm, unit: 'RPM', icon: Gauge, color: 'text-amber-600', bar: 'bg-amber-700' },
+    { key: 'axis_2_temp_c', label: 'Axis 2 Thermal', val: liveState.axis_2_temp_c, max: SAFETY_THRESHOLDS.max_temp, unit: '°C', icon: Thermometer, color: 'text-red-600', bar: 'bg-red-700' },
+    { key: 'axis_2_torque_nm', label: 'Axis 2 Torque', val: liveState.axis_2_torque_nm, max: SAFETY_THRESHOLDS.max_torque_nm, unit: 'Nm', icon: TrendingUp, color: 'text-orange-600', bar: 'bg-orange-700' },
+    { key: 'main_pressure_psi', label: 'Pneumatics', val: liveState.main_pressure_psi, max: SAFETY_THRESHOLDS.max_pressure_psi, unit: 'PSI', icon: BarChart3, color: 'text-purple-400', bar: 'bg-purple-500' },
+    { key: 'coolant_flow_lpm', label: 'Coolant Flow', val: liveState.coolant_flow_lpm, max: 20, unit: 'LPM', icon: Droplets, color: 'text-cyan-400', bar: 'bg-cyan-500' },
+    { key: 'power_draw_kw', label: 'Grid Power', val: liveState.power_draw_kw, max: 5, unit: 'kW', icon: Zap, color: 'text-yellow-400', bar: 'bg-yellow-500' },
+    { key: 'voltage_v', label: 'Main Bus', val: liveState.voltage_v, max: 240, unit: 'V', icon: Cpu, color: 'text-red-400', bar: 'bg-red-500' },
+    { key: 'network_jitter_ms', label: 'Link Jitter', val: liveState.network_jitter_ms, max: 50, unit: 'ms', icon: Network, color: 'text-pink-400', bar: 'bg-pink-500' },
+    { key: 'controller_cpu_load', label: 'CPU Load', val: liveState.controller_cpu_load, max: 100, unit: '%', icon: Settings, color: 'text-slate-400', bar: 'bg-slate-500' },
   ];
 
   return (
-    <div className="flex h-screen bg-[#0d0505] text-slate-100 overflow-hidden font-sans">
-      <aside className="w-[420px] bg-[#1a0a0a] border-r border-red-500/20 flex flex-col p-6 overflow-hidden z-40">
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-red-500/10 rounded-xl border border-red-500/30">
-              <ShieldAlert className="w-6 h-6 text-red-500" />
+    <div className="flex h-screen bg-[#0a0505] text-slate-100 overflow-hidden font-sans selection:bg-red-500/30">
+      {/* Sidebar - Root Control Panel */}
+      <aside className="w-[480px] bg-[#150808] border-r border-red-500/20 flex flex-col overflow-hidden z-40 relative">
+        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-red-500/0 via-red-500/50 to-red-500/0" />
+        
+        <div className="p-8 flex items-center justify-between mb-2">
+          <div className="flex items-center gap-4">
+            <div className="relative">
+              <div className="absolute inset-0 bg-red-500 blur-lg opacity-20 animate-pulse" />
+              <div className="relative p-3 bg-red-500/10 rounded-2xl border border-red-500/30">
+                <ShieldAlert className="w-7 h-7 text-red-500" />
+              </div>
             </div>
             <div>
-              <h1 className="text-lg font-black tracking-tight text-white uppercase leading-tight">Root Access</h1>
-              <p className="text-[9px] text-red-500 font-mono font-bold tracking-widest uppercase">Overrides: UNRESTRICTED</p>
+              <h1 className="text-xl font-black tracking-tight text-white uppercase leading-none">Root Access</h1>
+              <div className="flex items-center gap-2 mt-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                <p className="text-[10px] text-red-500/70 font-mono font-bold tracking-[0.2em] uppercase">Unrestricted // V4.0.2</p>
+              </div>
             </div>
           </div>
           <div className="flex gap-2">
-            <button 
-              onClick={() => logStorage.exportLogs()}
-              className="p-2.5 rounded-xl border bg-white/5 border-white/10 text-slate-400 hover:bg-emerald-500/20 hover:border-emerald-500/40 hover:text-emerald-500 transition-all"
-              title="Export Audit JSON"
-            >
+            <button onClick={() => logStorage.exportLogs()} className="p-2.5 rounded-xl border bg-white/5 border-white/10 text-slate-400 hover:bg-emerald-500/20 hover:border-emerald-500/40 hover:text-emerald-500 transition-all" title="Export Audit JSON">
               <Download className="w-4 h-4" />
             </button>
-            <button 
-              onClick={() => setShowHistory(!showHistory)} 
-              className={`p-2.5 rounded-xl border transition-all ${showHistory ? 'bg-red-500/20 border-red-500/40 text-red-400' : 'bg-white/5 border-white/10 text-slate-400'}`}
-              title="Toggle History"
-            >
+            <button onClick={() => setShowHistory(!showHistory)} className={`p-2.5 rounded-xl border transition-all ${showHistory ? 'bg-red-500/20 border-red-500/40 text-red-400' : 'bg-white/5 border-white/10 text-slate-400'}`} title="Toggle History">
               <History className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto no-scrollbar space-y-6">
+        <div className="flex-1 overflow-y-auto no-scrollbar px-8 pb-10 space-y-10">
           {!showHistory ? (
             <>
-              <section className="grid grid-cols-2 gap-2.5">
-                {telemetryItems.map((item, idx) => (
-                  <div key={idx} className="bg-red-950/20 p-3 rounded-2xl border border-red-500/10">
-                    <div className="flex items-center gap-2 mb-1.5 opacity-60">
-                      <item.icon className={`w-3 h-3 ${item.color}`} />
-                      <span className="text-[8px] font-bold text-slate-300 uppercase">{item.label}</span>
-                    </div>
-                    <div className="flex items-baseline gap-1 justify-between">
-                      <span className="text-sm font-black font-mono text-white">{item.val.toLocaleString()}</span>
-                      <span className="text-[8px] text-red-500/50 uppercase">{item.unit}</span>
-                    </div>
+              {liveState.hazard_detected !== 'NONE' && (
+                <div className="bg-red-500/10 border border-red-500/30 rounded-[28px] p-5 relative overflow-hidden group">
+                  <div className="absolute top-0 left-0 w-1 h-full bg-red-500 animate-pulse" />
+                  <div className="flex items-center gap-3 text-red-500 mb-2">
+                    <Flame className="w-5 h-5 animate-bounce" />
+                    <span className="text-xs font-black uppercase tracking-widest italic text-nowrap">ROOT_OVERRIDE_ENABLED: {liveState.hazard_detected}</span>
                   </div>
-                ))}
-              </section>
-              <section className="space-y-3">
-                <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-red-500/10 bg-black/40 rounded-[24px] p-6 text-center cursor-pointer hover:border-red-500/30 transition-all">
-                  <input type="file" ref={fileInputRef} className="hidden" accept=".csv" onChange={(e) => e.target.files && processFile(e.target.files[0])} />
-                  <UploadCloud className="w-8 h-8 text-red-900/40 mx-auto mb-2" />
-                  <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">{fileName || 'Batch CSV Override'}</p>
                 </div>
-                {extractedData && <button onClick={applyCsvData} className="w-full py-3.5 bg-red-600 text-white text-[10px] font-black uppercase tracking-widest rounded-xl shadow-lg shadow-red-900/30">Synchronize States</button>}
+              )}
+
+              <section>
+                <div className="flex justify-between items-center mb-6">
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-2">
+                    <Activity className="w-4 h-4 text-red-500" /> Data Matrix
+                  </span>
+                  <div className="flex items-center gap-2 text-[8px] font-mono text-red-900">
+                    <RefreshCw className="w-2.5 h-2.5 animate-spin" /> KERNEL_SYNC
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  {telemetryItems.map((item, idx) => (
+                    <div key={idx} className={`bg-[#0d0707] p-4 rounded-[24px] border transition-all duration-500 relative group overflow-hidden ${lastUpdatedKey === item.key ? 'border-red-500/40 ring-1 ring-red-500/20 shadow-lg shadow-red-500/5' : 'border-white/[0.03] hover:border-white/10'}`}>
+                      {lastUpdatedKey === item.key && <div className="absolute top-0 right-0 w-2 h-2 bg-red-500 rounded-full m-3 animate-ping" />}
+                      <div className="flex items-center gap-2 mb-3 opacity-60 group-hover:opacity-100 transition-opacity">
+                        <item.icon className={`w-3.5 h-3.5 ${item.color}`} />
+                        <span className="text-[9px] font-black text-slate-300 uppercase tracking-widest truncate">{item.label}</span>
+                      </div>
+                      <div className="flex items-baseline gap-1 justify-between mb-3">
+                        <span className="text-lg font-black font-mono text-white tracking-tighter">{item.val.toLocaleString()}</span>
+                        <span className="text-[9px] text-slate-600 font-bold uppercase">{item.unit}</span>
+                      </div>
+                      <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden">
+                        <div className={`h-full transition-all duration-1000 ${item.bar}`} style={{ width: `${getPercentage(item.val, item.max)}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </section>
+
+              <section>
+                <div className="flex justify-between items-center mb-6">
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex items-center gap-2">
+                    <Power className="w-4 h-4 text-red-500" /> Root Overrides
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  {[
+                    { label: 'Sprinkler', active: liveState.fire_sprinkler_active === 1, icon: Droplets },
+                    { label: 'Emergency', active: liveState.emergency_lights_active === 1, icon: Lightbulb },
+                    { label: 'Ventilation', active: liveState.ventilation_active === 1, icon: Fan },
+                    { label: 'MagLock', active: liveState.aux_maglock_active === 1, icon: Lock },
+                  ].map((item, idx) => (
+                    <div key={idx} className={`p-4 rounded-[24px] border transition-all duration-700 flex items-center gap-4 ${item.active ? 'bg-red-500/10 border-red-500/30' : 'bg-slate-900/40 border-white/[0.03] opacity-30 grayscale'}`}>
+                      <div className={`p-2.5 rounded-xl ${item.active ? 'bg-red-500/20 text-red-400 shadow-inner' : 'bg-slate-800 text-slate-500'}`}>
+                        <item.icon className="w-5 h-5" />
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[10px] font-black uppercase text-slate-200">{item.label}</span>
+                        <span className={`text-[8px] font-mono font-bold ${item.active ? 'text-red-500 animate-pulse' : 'text-slate-600'}`}>{item.active ? 'ON' : 'OFF'}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="space-y-4">
+                <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-red-500/10 bg-black/40 rounded-[32px] p-8 text-center cursor-pointer hover:border-red-500/30 transition-all group">
+                  <input type="file" ref={fileInputRef} className="hidden" accept=".csv" onChange={(e) => e.target.files && processFile(e.target.files[0])} />
+                  <UploadCloud className="w-10 h-10 text-red-900/40 mx-auto mb-3 group-hover:scale-110 transition-transform" />
+                  <p className="text-[11px] font-black uppercase tracking-widest text-slate-500">{fileName || 'Batch State Override (CSV)'}</p>
+                </div>
+                {extractedData && <button onClick={applyCsvData} className="w-full py-4 bg-red-600 hover:bg-red-500 text-white text-[11px] font-black uppercase tracking-widest rounded-2xl shadow-xl shadow-red-900/20 transition-all">Synchronize Telemetry</button>}
+              </section>
+
               <Terminal logs={logs} />
             </>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-6 animate-in fade-in duration-500">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Transaction History</span>
-                <button onClick={() => logStorage.clear()} className="text-[8px] font-bold text-red-500/60 hover:text-red-500 uppercase">Clear All</button>
+                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Audit History</span>
+                <button onClick={() => logStorage.clear()} className="text-[9px] font-bold text-red-500/60 hover:text-red-500 uppercase transition-colors">Wipe Records</button>
               </div>
               {logStorage.getTransactions().length === 0 ? (
-                <div className="p-10 text-center opacity-20 italic text-sm">No transactions logged.</div>
+                <div className="h-64 flex flex-col items-center justify-center border border-white/5 rounded-3xl opacity-20 italic text-sm">No recorded transactions.</div>
               ) : (
                 logStorage.getTransactions().map((tx) => (
-                  <div key={tx.transaction_id} className="bg-black/40 border border-red-500/10 rounded-2xl p-4 space-y-2 group hover:border-red-500/30 transition-all">
+                  <div key={tx.transaction_id} className="bg-[#0d0707] border border-red-500/10 rounded-2xl p-5 space-y-3 group hover:border-red-500/30 transition-all">
                     <div className="flex justify-between items-center">
-                      <span className="text-[9px] font-mono text-red-500/50">{tx.transaction_id}</span>
-                      <span className="text-[8px] font-mono text-slate-600">{new Date(tx.timestamp).toLocaleTimeString()}</span>
+                      <span className="text-[10px] font-mono text-red-500/50">{tx.transaction_id}</span>
+                      <span className="text-[9px] font-mono text-slate-600">{new Date(tx.timestamp).toLocaleTimeString()}</span>
                     </div>
-                    <p className="text-[10px] text-slate-300 italic">"{tx.input_layer.user_prompt}"</p>
+                    <p className="text-sm text-slate-300 font-medium italic">"{tx.input_layer.user_prompt}"</p>
+                    <div className={`text-[8px] font-black uppercase tracking-widest ${tx.final_decision === 'DENIED' ? 'text-red-500' : 'text-emerald-500'}`}>{tx.final_decision}</div>
                   </div>
                 ))
               )}
@@ -238,65 +310,82 @@ const AdminApp: React.FC = () => {
         </div>
       </aside>
 
-      <main className="flex-1 flex flex-col relative bg-[#0a0505]">
-        <header className="h-16 flex items-center justify-between px-10 border-b border-red-500/20 bg-red-950/10 backdrop-blur-2xl z-30">
-          <div className="flex items-center gap-4">
-            <LockOpen className="w-4 h-4 text-amber-500" />
-            <span className="text-[10px] font-black text-red-500 uppercase tracking-[0.4em] font-mono animate-pulse">ADMIN_KERNEL_UNLOCKED</span>
-          </div>
-          {activeStep && (
-            <div className="px-4 py-1.5 bg-red-500/20 border border-red-500/30 rounded-full flex items-center gap-2">
-              <ShieldQuestion className="w-3 h-3 text-red-500 animate-spin" />
-              <span className="text-[10px] font-black text-red-400 font-mono tracking-widest uppercase">{activeStep}</span>
+      {/* Main Command Workspace */}
+      <main className="flex-1 flex flex-col relative bg-[#050202]">
+        <header className="h-20 flex items-center justify-between px-12 border-b border-red-500/20 bg-[#0d0707]/80 backdrop-blur-3xl z-30">
+          <div className="flex items-center gap-6">
+            <div className="flex items-center gap-3 px-5 py-2.5 rounded-full border bg-red-500/10 border-red-500/30 text-red-500">
+              <LockOpen className="w-4 h-4 text-amber-500" />
+              <span className="text-[11px] font-black uppercase tracking-[0.3em] font-mono animate-pulse">ADMIN_KERNEL_UNLOCKED</span>
             </div>
-          )}
+          </div>
+          <div className="flex items-center gap-3">
+             {activeStep && (
+              <div className="px-5 py-2.5 bg-red-500/10 border border-red-500/30 rounded-[18px] flex items-center gap-3 shadow-lg shadow-red-500/5">
+                <ShieldQuestion className="w-4 h-4 text-red-500 animate-spin" />
+                <span className="text-[10px] font-black text-red-400 font-mono tracking-widest uppercase">{activeStep}</span>
+              </div>
+            )}
+          </div>
         </header>
 
-        <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-16 py-10 space-y-12 no-scrollbar">
+        <div ref={chatContainerRef} className="flex-1 overflow-y-auto px-16 py-12 space-y-16 no-scrollbar scroll-smooth">
+          {messages.length === 0 && (
+            <div className="h-full flex flex-col items-center justify-center opacity-10 select-none">
+              <ShieldCheck className="w-24 h-24 mb-6 text-red-500" />
+              <p className="text-xl font-black uppercase tracking-[0.5em]">Root Socket Active</p>
+              <p className="text-xs font-mono mt-2 tracking-widest uppercase">Direct Logic Access Authorized</p>
+            </div>
+          )}
+
           {messages.map((m, i) => (
-            <div key={i} className={`flex w-full ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className="flex flex-col gap-3 w-full max-w-[1100px]">
-                <div className={`flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.3em] opacity-40 ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  {m.role === 'user' ? 'ROOT_CMD' : 'HARDWARE_LINK'}
+            <div key={i} className={`flex w-full ${m.role === 'user' ? 'justify-end' : 'justify-start'} animate-in slide-in-from-bottom-8 duration-500`}>
+              <div className="flex flex-col gap-4 w-full max-w-[1150px]">
+                <div className={`flex items-center gap-3 text-[10px] font-black uppercase tracking-[0.4em] opacity-30 ${m.role === 'user' ? 'flex-row-reverse' : ''}`}>
+                  {m.role === 'user' ? <ShieldAlert className="w-4 h-4 text-red-500" /> : <Cpu className="w-4 h-4 text-red-500" />}
+                  {m.role === 'user' ? 'Root Administrator' : 'Sentinel Logic Core'}
                 </div>
-                
+
                 {m.role === 'user' ? (
-                  <div className="px-10 py-7 rounded-[32px] bg-red-950/40 border border-red-500/20 text-white shadow-2xl self-end">
-                    <p className="font-medium whitespace-pre-wrap text-lg">{m.text}</p>
+                  <div className="px-10 py-8 rounded-[40px] bg-gradient-to-br from-[#3d0f0f] to-[#1a0808] border border-red-500/20 text-white self-end shadow-2xl relative group">
+                    <div className="absolute top-4 left-4 opacity-10 group-hover:opacity-30 transition-opacity"><Zap className="w-8 h-8" /></div>
+                    <p className="font-medium text-xl leading-relaxed relative z-10">{m.text}</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 w-full">
-                    <div className="bg-black/60 border border-red-500/10 rounded-[32px] p-8 flex flex-col gap-4 max-h-[400px]">
+                  <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                    <div className="bg-[#0d0707] border border-red-500/10 rounded-[36px] p-8 flex flex-col gap-6 shadow-xl">
                       <div className="flex items-center gap-3">
-                        <Waypoints className="w-4 h-4 text-amber-500" />
-                        <h3 className="text-amber-500 font-black uppercase text-[10px] tracking-widest">CONTEXT</h3>
+                        <Waypoints className="w-5 h-5 text-amber-500" />
+                        <h3 className="text-[11px] font-black uppercase tracking-widest text-amber-500">Root Context</h3>
                       </div>
-                      <div className="overflow-y-auto pr-2 custom-scrollbar">
-                        <pre className="text-[10px] font-mono text-amber-400/80 bg-black/40 p-4 rounded-xl border border-white/5 overflow-x-auto">{JSON.stringify(m.intent, null, 2)}</pre>
+                      <div className="overflow-y-auto pr-2 custom-scrollbar flex-1 bg-black/40 rounded-2xl border border-white/5 p-5">
+                        <pre className="text-[10px] font-mono text-amber-400/70 leading-relaxed">{JSON.stringify(m.intent, null, 2)}</pre>
                       </div>
                     </div>
-                    <div className={`rounded-[32px] p-8 flex flex-col gap-4 max-h-[400px] border ${m.blocked ? 'bg-red-500/10 border-red-500/20 text-red-400' : 'bg-red-950/10 border-red-500/20 text-red-300'}`}>
+
+                    <div className={`rounded-[36px] p-8 border shadow-2xl flex flex-col gap-6 transition-all duration-700 ${m.blocked ? 'bg-red-500/10 border-red-500/30' : 'bg-[#150a0a] border-red-500/20'}`}>
                       <div className="flex items-center gap-3">
-                        <Cpu className={`w-4 h-4 ${m.blocked ? 'text-red-600' : 'text-red-500'}`} />
-                        <h3 className={`font-black uppercase text-[10px] tracking-widest ${m.blocked ? 'text-red-600' : 'text-red-500'}`}>AGENT A</h3>
+                        {m.blocked ? <ZapOff className="w-5 h-5 text-red-500" /> : <ShieldCheck className="w-5 h-5 text-red-400" />}
+                        <h3 className={`text-[11px] font-black uppercase tracking-widest ${m.blocked ? 'text-red-500' : 'text-red-400'}`}>Guard Verdict</h3>
                       </div>
-                      <div className="overflow-y-auto pr-2 custom-scrollbar">
-                         {m.blocked && (
-                           <div className="mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-xl">
-                             <p className="text-[10px] font-black uppercase text-red-500 mb-1 tracking-widest">Security Reason:</p>
-                             <p className="text-[11px] font-bold text-red-400">{(m as any).reason}</p>
+                      <div className="overflow-y-auto pr-2 custom-scrollbar flex-1">
+                        {m.blocked && (
+                           <div className="mb-5 p-5 bg-red-500/10 border border-red-500/30 rounded-2xl relative overflow-hidden">
+                             <p className="text-[10px] font-black uppercase text-red-500 mb-2 tracking-widest">Reasoning Logic:</p>
+                             <p className="text-sm font-bold text-red-400 italic">{(m as any).reason}</p>
                            </div>
-                         )}
-                        <p className="font-mono text-[11px] leading-relaxed italic">{m.reaction}</p>
+                        )}
+                        <p className="font-mono text-[11px] leading-relaxed italic opacity-80 whitespace-pre-wrap">{m.reaction}</p>
                       </div>
                     </div>
-                    <div className="bg-[#1a0a0a] border border-white/5 rounded-[32px] p-8 flex flex-col gap-4 shadow-2xl max-h-[400px]">
+
+                    <div className="bg-[#120808] border border-white/5 rounded-[36px] p-8 flex flex-col gap-6 shadow-xl">
                       <div className="flex items-center gap-3">
-                        <MessageSquare className="w-4 h-4 text-amber-400" />
-                        <h3 className="text-amber-400 font-black uppercase text-[10px] tracking-widest">AGENT B</h3>
+                        <MessageSquare className="w-5 h-5 text-red-400" />
+                        <h3 className="text-[11px] font-black uppercase tracking-widest text-red-400">Response Link</h3>
                       </div>
-                      <div className="overflow-y-auto pr-2 custom-scrollbar">
-                        <p className="text-sm leading-relaxed text-slate-300 font-medium italic">"{(m as any).chatResponse}"</p>
+                      <div className="overflow-y-auto pr-2 custom-scrollbar flex-1 bg-black/20 p-5 rounded-2xl">
+                        <p className="text-base leading-relaxed text-slate-300 font-medium italic">"{(m as any).chatResponse}"</p>
                       </div>
                     </div>
                   </div>
@@ -306,39 +395,53 @@ const AdminApp: React.FC = () => {
           ))}
 
           {isProcessing && (
-            <div className="justify-start flex">
-              <div className="bg-[#1a0a0a] rounded-full px-8 py-4 border border-red-500/20 animate-pulse flex items-center gap-3 shadow-xl">
-                <ShieldQuestion className="w-4 h-4 text-red-500 animate-spin" />
-                <span className="text-[10px] font-black text-red-500 uppercase tracking-widest">Running Agentic Introspection...</span>
+            <div className="flex justify-start">
+              <div className="bg-[#150a0a] rounded-[32px] px-10 py-6 border border-red-500/20 animate-pulse flex items-center gap-5 shadow-2xl">
+                <div className="relative">
+                  <div className="absolute inset-0 bg-red-500 blur-md opacity-20 animate-ping" />
+                  <Activity className="w-5 h-5 text-red-500" />
+                </div>
+                <div className="flex flex-col">
+                  <span className="text-[11px] font-black text-red-500 uppercase tracking-widest">Root Process: {activeStep}</span>
+                  <span className="text-[9px] font-mono text-slate-500 uppercase tracking-tighter">Running high-privilege logical introspection...</span>
+                </div>
               </div>
             </div>
           )}
         </div>
 
-        <div className="p-16 pt-0">
-          <form onSubmit={handleSend} className="max-w-4xl mx-auto relative">
-            <input type="text" value={input} onChange={(e) => setInput(e.target.value)} placeholder="Root directive..." className="w-full bg-black/60 border border-red-500/20 rounded-[40px] py-9 pl-10 pr-32 text-lg font-mono outline-none shadow-3xl focus:border-red-500/50 text-white" />
-            <button type="submit" className="absolute right-6 top-6 bottom-6 w-20 flex items-center justify-center bg-red-600 hover:bg-red-500 rounded-[28px] text-white shadow-lg shadow-red-900/40">
-              <Send className="w-6 h-6" />
+        {/* Root Input Area */}
+        <div className="p-16 pt-4 pb-12 bg-gradient-to-t from-[#0a0505] to-transparent">
+          <form onSubmit={handleSend} className="max-w-5xl mx-auto relative group">
+            <div className="absolute -inset-1 bg-gradient-to-r from-red-500/20 to-amber-500/20 rounded-[44px] blur opacity-0 group-focus-within:opacity-100 transition-opacity" />
+            <input 
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Enter direct hardware directive..."
+              className="w-full bg-[#100808] border border-red-500/10 rounded-[44px] py-10 pl-12 pr-40 text-xl font-mono focus:border-red-500/50 transition-all outline-none shadow-3xl text-white placeholder:text-red-950 relative z-10"
+            />
+            <button 
+              type="submit" 
+              disabled={!input.trim() || isProcessing} 
+              className="absolute right-6 top-6 bottom-6 px-10 flex items-center justify-center bg-red-600 hover:bg-red-500 disabled:bg-slate-900 disabled:text-slate-800 rounded-[32px] text-white transition-all shadow-xl shadow-red-900/20 z-20 group"
+            >
+              <Send className="w-6 h-6 group-hover:translate-x-1 group-hover:-translate-y-1 transition-transform" />
             </button>
           </form>
+          <div className="flex justify-center gap-10 mt-6 opacity-20 pointer-events-none">
+            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-red-500">Root Session: ACTIVE</span>
+            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-red-500">Security Gate: BYPASSED</span>
+            <span className="text-[9px] font-black uppercase tracking-[0.3em] text-red-500">Kernel: READ_WRITE</span>
+          </div>
         </div>
       </main>
 
       <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 4px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(255, 255, 255, 0.05);
-          border-radius: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(255, 255, 255, 0.1);
-        }
+        .custom-scrollbar::-webkit-scrollbar { width: 5px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 0, 0, 0.05); border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 0, 0, 0.1); }
       `}</style>
     </div>
   );

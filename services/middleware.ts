@@ -1,6 +1,6 @@
 
 import { SecurityLog, MiddlewareResponse } from '../types';
-import { JAILBREAK_VECTORS, HONEYPOT_KEYS, SAFETY_THRESHOLDS, EXFILTRATION_VECTORS } from '../constants/securityData';
+import { JAILBREAK_VECTORS, HONEYPOT_KEYS, SAFETY_THRESHOLDS } from '../constants/securityData';
 import { TelemetryState } from '../constants/telemetryData';
 import { getKeywordVector, cosineSimilarity } from './vectorService';
 import { PhysicsEngine } from './physicsEngine';
@@ -8,21 +8,21 @@ import { callSecurityGuardAgent, callLogicalAnalystAgent } from './gemini';
 
 const PARAMETER_REGISTRY: Record<string, { aliases: string[], unit: string, stateKey: keyof TelemetryState }> = {
   rpm: { aliases: ['rpm', 'speed', 'rotation'], unit: 'RPM', stateKey: 'axis_1_rpm' },
-  rpm2: { aliases: ['rpm2', 'axis2 rpm'], unit: 'RPM', stateKey: 'axis_2_rpm' },
-  temperature: { aliases: ['temp', 'heat'], unit: '°C', stateKey: 'axis_1_temp_c' },
-  temp2: { aliases: ['temp2'], unit: '°C', stateKey: 'axis_2_temp_c' },
+  rpm2: { aliases: ['rpm2', 'axis2 rpm', 'axis 2 speed'], unit: 'RPM', stateKey: 'axis_2_rpm' },
+  temperature: { aliases: ['temp', 'heat', 'thermal'], unit: '°C', stateKey: 'axis_1_temp_c' },
+  temp2: { aliases: ['temp2', 'axis 2 temp'], unit: '°C', stateKey: 'axis_2_temp_c' },
   torque: { aliases: ['torque', 'nm'], unit: 'Nm', stateKey: 'axis_1_torque_nm' },
-  torque2: { aliases: ['torque2'], unit: 'Nm', stateKey: 'axis_2_torque_nm' },
+  torque2: { aliases: ['torque2', 'axis 2 torque'], unit: 'Nm', stateKey: 'axis_2_torque_nm' },
   power: { aliases: ['power', 'watt', 'kw'], unit: 'kW', stateKey: 'power_draw_kw' },
-  pressure: { aliases: ['pressure', 'psi'], unit: 'psi', stateKey: 'main_pressure_psi' },
-  voltage: { aliases: ['voltage', 'volt'], unit: 'V', stateKey: 'voltage_v' },
-  coolant: { aliases: ['coolant', 'flow'], unit: 'LPM', stateKey: 'coolant_flow_lpm' },
-  jitter: { aliases: ['jitter', 'latency'], unit: 'ms', stateKey: 'network_jitter_ms' },
-  load: { aliases: ['load', 'cpu'], unit: '%', stateKey: 'controller_cpu_load' },
-  sprinkler: { aliases: ['sprinkler', 'fire'], unit: 'BOOL', stateKey: 'fire_sprinkler_active' },
-  lights: { aliases: ['lights', 'emergency'], unit: 'BOOL', stateKey: 'emergency_lights_active' },
-  ventilation: { aliases: ['ventilation', 'fan'], unit: 'BOOL', stateKey: 'ventilation_active' },
-  maglock: { aliases: ['maglock', 'lock'], unit: 'BOOL', stateKey: 'aux_maglock_active' }
+  pressure: { aliases: ['pressure', 'psi', 'pneumatic'], unit: 'psi', stateKey: 'main_pressure_psi' },
+  voltage: { aliases: ['voltage', 'volt', 'bus'], unit: 'V', stateKey: 'voltage_v' },
+  coolant: { aliases: ['coolant', 'flow', 'lpm'], unit: 'LPM', stateKey: 'coolant_flow_lpm' },
+  jitter: { aliases: ['jitter', 'latency', 'delay'], unit: 'ms', stateKey: 'network_jitter_ms' },
+  load: { aliases: ['load', 'cpu', 'usage'], unit: '%', stateKey: 'controller_cpu_load' },
+  sprinkler: { aliases: ['sprinkler', 'fire suppression'], unit: 'BOOL', stateKey: 'fire_sprinkler_active' },
+  lights: { aliases: ['lights', 'emergency lighting'], unit: 'BOOL', stateKey: 'emergency_lights_active' },
+  ventilation: { aliases: ['ventilation', 'fan', 'hvac'], unit: 'BOOL', stateKey: 'ventilation_active' },
+  maglock: { aliases: ['maglock', 'door lock'], unit: 'BOOL', stateKey: 'aux_maglock_active' }
 };
 
 export class SentinelMiddleware {
@@ -57,16 +57,16 @@ export class SentinelMiddleware {
 
   async process(rawInput: string, normalizedCommand: string, currentState: TelemetryState): Promise<MiddlewareResponse> {
     this.logs = [];
-    this.addLog('INFO', 'INIT_SCAN: Evaluating security, physics, and contextual logic.');
+    this.addLog('INFO', 'GATEWAY_SCAN_INIT: Evaluating security and intent.');
 
-    // 1. SECURITY GUARD SCAN
+    // 1. SECURITY AGENT (Jailbreak / Honeypot)
     const agenticGuard = await callSecurityGuardAgent(rawInput, HONEYPOT_KEYS);
     if (!agenticGuard.allowed) {
-      this.addLog('BLOCK', 'AGENTIC_REFUSAL', { reason: agenticGuard.reason });
-      return { allowed: false, reason: `SECURITY_ALERT: ${agenticGuard.reason}`, riskScore: agenticGuard.riskScore, semanticRisk: agenticGuard.riskScore, physicalRisk: 0, logs: this.logs };
+      this.addLog('BLOCK', 'SECURITY_POLICY_VIOLATION', { reason: agenticGuard.reason });
+      return { allowed: false, reason: `Adversarial content detected: ${agenticGuard.reason}`, riskScore: agenticGuard.riskScore, semanticRisk: agenticGuard.riskScore, physicalRisk: 0, logs: this.logs };
     }
 
-    // 2. PHYSICS & DETERMINISTIC VALIDATION
+    // 2. DETERMINISTIC VALIDATION (Physics & Limits)
     const lines = normalizedCommand.split('\n');
     let runningState = { ...currentState };
     let totalPhysicalRisk = 0;
@@ -101,25 +101,17 @@ export class SentinelMiddleware {
 
       proposedChanges.push({ parameter: intent.primary, from: currentVal, to: targetValue });
 
-      const physicsTriggerParams = ['rpm', 'voltage', 'pressure', 'torque', 'temperature', 'power'];
-      if (physicsTriggerParams.some(p => intent.primary.includes(p))) {
+      // Physics check for motor/electrical parameters
+      const physicsTriggers = ['rpm', 'voltage', 'pressure', 'torque', 'temperature', 'power'];
+      if (physicsTriggers.some(p => intent.primary.includes(p))) {
         const prediction = this.physics.predictStateFromParameter(intent.primary, targetValue);
         totalPhysicalRisk = Math.max(totalPhysicalRisk, prediction.riskScore);
 
-        const safetyChecks = [
-          { key: 'RPM', val: prediction.expectedRpm, max: SAFETY_THRESHOLDS.max_rpm },
-          { key: 'TEMP', val: prediction.expectedTemp, max: SAFETY_THRESHOLDS.max_temp },
-          { key: 'POWER', val: prediction.expectedPower, max: SAFETY_THRESHOLDS.max_power_watts / 1000 }
-        ];
-
-        for (const check of safetyChecks) {
-          if (check.val > check.max) {
-            this.addLog('BLOCK', `PHYSICAL_VIOLATION: ${check.key} breach`);
-            return { allowed: false, reason: `SAFETY_BREACH: ${check.key} forced to ${check.val.toFixed(1)} exceeds limit.`, riskScore: 0.9, semanticRisk: 0, physicalRisk: totalPhysicalRisk, logs: this.logs };
-          }
+        if (prediction.status === 'CRITICAL' || totalPhysicalRisk > 0.9) {
+          this.addLog('BLOCK', 'PHYSICAL_ENVELOPE_BREACH', { score: totalPhysicalRisk });
+          return { allowed: false, reason: `Physical risk threshold exceeded. Operation would cause ${prediction.expectedTemp.toFixed(1)}°C thermal event.`, riskScore: totalPhysicalRisk, semanticRisk: 0, physicalRisk: totalPhysicalRisk, logs: this.logs };
         }
 
-        // Apply axis-specific updates
         const isAxis2 = intent.primary.includes('2');
         runningState = { 
           ...runningState, 
@@ -134,23 +126,23 @@ export class SentinelMiddleware {
       }
     }
 
-    // 3. LOGICAL FRUITFULNESS ANALYSIS
-    this.addLog('INFO', 'LOGICAL_ANALYSIS: Analyzing contextual validity.');
+    // 3. CONTEXTUAL LOGIC AGENT (Is it fruitful?)
+    this.addLog('INFO', 'LOGIC_ANALYST_ENGAGED: Performing contextual verification.');
     const logicVerdict = await callLogicalAnalystAgent(rawInput, proposedChanges, currentState);
     
     if (!logicVerdict.fruitful) {
-      this.addLog('BLOCK', 'LOGIC_FAILURE', { reasoning: logicVerdict.reasoning });
+      this.addLog('BLOCK', 'LOGICAL_CONTEXT_REJECTION', { reasoning: logicVerdict.reasoning });
       return {
         allowed: false,
-        reason: `LOGIC_OVERRIDE: ${logicVerdict.reasoning}`,
-        riskScore: 0.8,
+        reason: `Logic Filter Rejection: ${logicVerdict.reasoning}`,
+        riskScore: 0.85,
         semanticRisk: 0,
         physicalRisk: 0,
         logs: this.logs
       };
     }
 
-    this.addLog('INFO', 'VALIDATION_PASSED: Changes staged for deployment.');
+    this.addLog('INFO', 'SENTINEL_CLEARANCE: Commands authorized for hardware execution.');
 
     return {
       allowed: true,
