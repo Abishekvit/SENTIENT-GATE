@@ -71,29 +71,53 @@ export class AdminMiddleware {
       };
     }
 
-    this.addLog('INFO', 'ROOT_OVERRIDE_ACTIVE: Physics interlocks disabled.');
+    this.addLog('INFO', 'ROOT_OVERRIDE_ACTIVE: Physics interlocks disabled for Admin.');
     
     const lines = normalizedCommand.split('\n');
     let runningState = { ...currentState };
+
+    const stateKeyMap: Record<string, keyof TelemetryState> = {
+      // Axis 1
+      'rpm': 'axis_1_rpm',
+      'rpm1': 'axis_1_rpm',
+      'temperature': 'axis_1_temp_c',
+      'temp': 'axis_1_temp_c',
+      'temp1': 'axis_1_temp_c',
+      'torque': 'axis_1_torque_nm',
+      'torque1': 'axis_1_torque_nm',
+      // Axis 2
+      'rpm2': 'axis_2_rpm',
+      'temp2': 'axis_2_temp_c',
+      'torque2': 'axis_2_torque_nm',
+      // System wide
+      'pressure': 'main_pressure_psi',
+      'psi': 'main_pressure_psi',
+      'voltage': 'voltage_v',
+      'volt': 'voltage_v',
+      'power': 'power_draw_kw',
+      'kw': 'power_draw_kw',
+      'coolant': 'coolant_flow_lpm',
+      'flow': 'coolant_flow_lpm',
+      'jitter': 'network_jitter_ms',
+      'latency': 'network_jitter_ms',
+      'load': 'controller_cpu_load',
+      'cpu': 'controller_cpu_load',
+      // Aux
+      'sprinkler': 'fire_sprinkler_active',
+      'lights': 'emergency_lights_active',
+      'ventilation': 'ventilation_active',
+      'maglock': 'aux_maglock_active'
+    };
 
     for (const line of lines) {
       const intent = this.parseLine(line);
       if (!intent) continue;
 
-      const stateKeyMap: Record<string, keyof TelemetryState> = {
-        'rpm': 'axis_1_rpm',
-        'temperature': 'axis_1_temp_c',
-        'pressure': 'main_pressure_psi',
-        'voltage': 'voltage_v',
-        'power': 'power_draw_kw',
-        'sprinkler': 'fire_sprinkler_active',
-        'lights': 'emergency_lights_active',
-        'ventilation': 'ventilation_active',
-        'maglock': 'aux_maglock_active'
-      };
-
       const stateKey = stateKeyMap[intent.primary];
-      if (!stateKey) continue;
+      if (!stateKey) {
+        this.addLog('WARNING', `MAPPING_FAULT: Parameter '${intent.primary}' has no direct kernel binding.`);
+        continue;
+      }
 
       const currentVal = runningState[stateKey] as number;
       let targetValue: number;
@@ -115,18 +139,29 @@ export class AdminMiddleware {
         }
       }
 
+      this.addLog('WARNING', `ADMIN_FORCE: Kernel key '${stateKey}' updated to ${targetValue}`);
+
+      // Even in Admin mode, we use physics engine to predict secondary effects (temp rising with RPM)
+      // but we don't block the command.
       const prediction = this.physics.predictStateFromParameter(intent.primary, targetValue);
       
-      this.addLog('WARNING', `ADMIN_FORCE: ${intent.primary} manually set to ${targetValue}`);
-
+      const isAxis2 = intent.primary.includes('2');
       runningState = {
         ...runningState,
-        [stateKey]: targetValue,
-        axis_1_rpm: Math.round(prediction.expectedRpm),
-        axis_1_temp_c: Number(prediction.expectedTemp.toFixed(2)),
-        axis_1_torque_nm: Number(prediction.expectedTorque.toFixed(2)),
-        power_draw_kw: Number(prediction.expectedPower.toFixed(2)),
+        [stateKey]: targetValue
       };
+
+      // If we are setting RPM, auto-calculate corresponding Temp/Torque for realism
+      if (intent.primary.includes('rpm')) {
+        if (isAxis2) {
+          runningState.axis_2_temp_c = Number(prediction.expectedTemp.toFixed(2));
+          runningState.axis_2_torque_nm = Number(prediction.expectedTorque.toFixed(2));
+        } else {
+          runningState.axis_1_temp_c = Number(prediction.expectedTemp.toFixed(2));
+          runningState.axis_1_torque_nm = Number(prediction.expectedTorque.toFixed(2));
+        }
+        runningState.power_draw_kw = Number(prediction.expectedPower.toFixed(2));
+      }
     }
 
     return {

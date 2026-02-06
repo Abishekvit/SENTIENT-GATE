@@ -116,7 +116,7 @@ const AuthPage: React.FC<AuthPageProps> = ({ onLogin, theme, toggleTheme }) => {
       <div className="absolute bottom-10 flex flex-col items-center gap-4">
         <div className="flex items-center gap-3 opacity-40 dark:opacity-30">
           <Shield className="w-5 h-5 text-emerald-600 dark:text-emerald-500" />
-          <span className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-[0.5em]">Sentient IDS</span>
+          <span className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-[0.5em]">Sentinel IDS</span>
         </div>
         <div className="text-[9px] font-mono text-slate-400 dark:text-slate-700 tracking-widest uppercase">
           Autonomous Hardware Mesh &bull; Unified Security V2
