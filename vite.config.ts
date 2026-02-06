@@ -8,7 +8,6 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
-        allowedHosts: ['sentient-gate.onrender.com'],
       },
       plugins: [react()],
       define: {
