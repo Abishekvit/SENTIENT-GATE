@@ -156,7 +156,7 @@ const App: React.FC = () => {
             </div>
           </div>
           <div>
-            <h1 className="text-xl font-black tracking-tight text-slate-900 dark:text-white uppercase leading-none">Sentinel IDS</h1>
+            <h1 className="text-xl font-black tracking-tight text-slate-900 dark:text-white uppercase leading-none">Sentient IDS</h1>
             <div className="flex items-center gap-2 mt-2">
               <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
               <p className="text-[10px] text-slate-500 dark:text-slate-500 font-mono font-bold tracking-[0.2em] uppercase text-nowrap">Control Layer // V4.0.2</p>
