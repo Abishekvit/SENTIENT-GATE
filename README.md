@@ -1,5 +1,10 @@
 # Sentient Gate 🛡️🏭
 
+Deployed Website: https://sentient-gate.onrender.com/
+(The env variables are disabled currently due to free tier restrictions)
+
+Admin Password: 7777
+
 > **The Context-Aware Firewall for Industrial AI.**
 
 **Sentient Gate** is an Agentic Security Mesh designed to prevent Large Language Models (LLMs) from causing physical damage in industrial environments. It solves the critical gap where standard AI guardrails fail to understand operational context (OT) in Cyber-Physical Systems.
